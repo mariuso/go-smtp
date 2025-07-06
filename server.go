@@ -82,6 +82,10 @@ type Server struct {
 	// ConnState specifies an optional callback function that is
 	// called when a client connection changes state.
 	ConnState ConnStateCallback
+	
+	// Maximum duration for the entire session (from connection to completion).
+	// Zero means no session-level timeout (only per-operation timeouts apply).
+	SessionTimeout    time.Duration
 
 	// Advertise SMTPUTF8 (RFC 6531) capability.
 	// Should be used only if backend supports it.

@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"context"
 	"io"
 
 	"github.com/emersion/go-sasl"
@@ -99,4 +100,37 @@ type AuthSession interface {
 
 	AuthMechanisms() []string
 	Auth(mech string) (sasl.Server, error)
+}
+
+// BackendContext is an add-on interface for Backend. It provides support for
+// context-aware session creation, enabling request cancellation, timeout 
+// enforcement, and distributed tracing.
+type BackendContext interface {
+	Backend
+
+	// NewSessionContext creates a new session with context support.
+	// The context can be used to cancel session creation or set deadlines.
+	NewSessionContext(ctx context.Context, c *Conn) (SessionContext, error)
+}
+
+// SessionContext is an add-on interface for Session. It provides support for
+// context-aware SMTP operations, enabling request cancellation, timeout
+// enforcement, and distributed tracing.
+type SessionContext interface {
+	Session
+
+	// MailContext issues a MAIL command with context support.
+	MailContext(ctx context.Context, from string, opts *MailOptions) error
+	
+	// RcptContext issues a RCPT command with context support.
+	RcptContext(ctx context.Context, to string, opts *RcptOptions) error
+	
+	// DataContext processes message data with context support.
+	DataContext(ctx context.Context, r io.Reader) error
+	
+	// ResetContext resets the session state with context support.
+	ResetContext(ctx context.Context) error
+	
+	// LogoutContext terminates the session with context support.
+	LogoutContext(ctx context.Context) error
 }

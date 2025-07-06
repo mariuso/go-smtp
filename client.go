@@ -5,6 +5,7 @@
 package smtp
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -265,6 +266,40 @@ func (c *Client) cmd(expectCode int, format string, args ...interface{}) (int, s
 	return c.readResponse(expectCode)
 }
 
+// cmdContext is like cmd but with context support for cancellation and deadlines.
+func (c *Client) cmdContext(ctx context.Context, expectCode int, format string, args ...interface{}) (int, string, error) {
+	// Check for cancellation before starting
+	select {
+	case <-ctx.Done():
+		return 0, "", ctx.Err()
+	default:
+	}
+
+	// Set deadline from context or use CommandTimeout, whichever is sooner
+	deadline := time.Now().Add(c.CommandTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	c.conn.SetDeadline(deadline)
+	defer c.conn.SetDeadline(time.Time{})
+
+	id, err := c.text.Cmd(format, args...)
+	if err != nil {
+		return 0, "", err
+	}
+	c.text.StartResponse(id)
+	defer c.text.EndResponse(id)
+
+	// Check for cancellation before reading response
+	select {
+	case <-ctx.Done():
+		return 0, "", ctx.Err()
+	default:
+	}
+
+	return c.readResponse(expectCode)
+}
+
 // helo sends the HELO greeting to the server. It should be used only when the
 // server does not support ehlo.
 func (c *Client) helo() error {
@@ -365,6 +400,15 @@ func (c *Client) Verify(addr string) error {
 //
 // If server returns an error, it will be of type *SMTPError.
 func (c *Client) Auth(a sasl.Client) error {
+	return c.AuthContext(context.Background(), a)
+}
+
+// AuthContext authenticates a client using the provided authentication mechanism.
+// Only servers that advertise the AUTH extension support this function.
+// The context can be used to cancel the authentication or set a deadline.
+//
+// If server returns an error, it will be of type *SMTPError.
+func (c *Client) AuthContext(ctx context.Context, a sasl.Client) error {
 	if err := c.hello(); err != nil {
 		return err
 	}
@@ -373,6 +417,14 @@ func (c *Client) Auth(a sasl.Client) error {
 	if err != nil {
 		return err
 	}
+	
+	// Check for cancellation before starting AUTH
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	
 	var resp64 []byte
 	if len(resp) > 0 {
 		resp64 = make([]byte, encoding.EncodedLen(len(resp)))
@@ -380,8 +432,17 @@ func (c *Client) Auth(a sasl.Client) error {
 	} else if resp != nil {
 		resp64 = []byte{'='}
 	}
-	code, msg64, err := c.cmd(0, strings.TrimSpace(fmt.Sprintf("AUTH %s %s", mech, resp64)))
+	code, msg64, err := c.cmdContext(ctx, 0, strings.TrimSpace(fmt.Sprintf("AUTH %s %s", mech, resp64)))
 	for err == nil {
+		// Check for cancellation in auth loop
+		select {
+		case <-ctx.Done():
+			// abort the AUTH on cancellation
+			c.cmd(501, "*")
+			return ctx.Err()
+		default:
+		}
+		
 		var msg []byte
 		switch code {
 		case 334:
@@ -409,7 +470,7 @@ func (c *Client) Auth(a sasl.Client) error {
 		}
 		resp64 = make([]byte, encoding.EncodedLen(len(resp)))
 		encoding.Encode(resp64, resp)
-		code, msg64, err = c.cmd(0, string(resp64))
+		code, msg64, err = c.cmdContext(ctx, 0, string(resp64))
 	}
 	return err
 }
@@ -424,11 +485,32 @@ func (c *Client) Auth(a sasl.Client) error {
 //
 // If server returns an error, it will be of type *SMTPError.
 func (c *Client) Mail(from string, opts *MailOptions) error {
+	return c.MailContext(context.Background(), from, opts)
+}
+
+// MailContext issues a MAIL command to the server using the provided email address.
+// If the server supports the 8BITMIME extension, MailContext adds the BODY=8BITMIME
+// parameter.
+// This initiates a mail transaction and is followed by one or more Rcpt calls.
+// The context can be used to cancel the operation or set a deadline.
+//
+// If opts is not nil, MAIL arguments provided in the structure will be added
+// to the command. Handling of unsupported options depends on the extension.
+//
+// If server returns an error, it will be of type *SMTPError.
+func (c *Client) MailContext(ctx context.Context, from string, opts *MailOptions) error {
 	if err := validateLine(from); err != nil {
 		return err
 	}
 	if err := c.hello(); err != nil {
 		return err
+	}
+
+	// Check for cancellation before building command
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	var sb strings.Builder
@@ -477,7 +559,7 @@ func (c *Client) Mail(from string, opts *MailOptions) error {
 		}
 		// We can safely discard parameter if server does not support AUTH.
 	}
-	_, _, err := c.cmd(250, "%s", sb.String())
+	_, _, err := c.cmdContext(ctx, 250, "%s", sb.String())
 	return err
 }
 
@@ -490,8 +572,28 @@ func (c *Client) Mail(from string, opts *MailOptions) error {
 //
 // If server returns an error, it will be of type *SMTPError.
 func (c *Client) Rcpt(to string, opts *RcptOptions) error {
+	return c.RcptContext(context.Background(), to, opts)
+}
+
+// RcptContext issues a RCPT command to the server using the provided email address.
+// A call to RcptContext must be preceded by a call to Mail and may be followed by
+// a Data call or another Rcpt call.
+// The context can be used to cancel the operation or set a deadline.
+//
+// If opts is not nil, RCPT arguments provided in the structure will be added
+// to the command. Handling of unsupported options depends on the extension.
+//
+// If server returns an error, it will be of type *SMTPError.
+func (c *Client) RcptContext(ctx context.Context, to string, opts *RcptOptions) error {
 	if err := validateLine(to); err != nil {
 		return err
+	}
+
+	// Check for cancellation before building command
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	var sb strings.Builder
@@ -544,7 +646,7 @@ func (c *Client) Rcpt(to string, opts *RcptOptions) error {
 		}
 		sb.WriteString(arg)
 	}
-	if _, _, err := c.cmd(25, "%s", sb.String()); err != nil {
+	if _, _, err := c.cmdContext(ctx, 25, "%s", sb.String()); err != nil {
 		return err
 	}
 	c.rcpts = append(c.rcpts, to)
@@ -556,6 +658,7 @@ func (c *Client) Rcpt(to string, opts *RcptOptions) error {
 type DataCommand struct {
 	client *Client
 	wc     io.WriteCloser
+	ctx    context.Context // context for cancellation support
 
 	closeErr error
 }
@@ -591,7 +694,21 @@ func (cmd *DataCommand) CloseWithResponse() (*DataResponse, error) {
 		return nil, err
 	}
 
-	cmd.client.conn.SetDeadline(time.Now().Add(cmd.client.SubmissionTimeout))
+	// Set deadline from context or use SubmissionTimeout, whichever is sooner
+	deadline := time.Now().Add(cmd.client.SubmissionTimeout)
+	if cmd.ctx != nil {
+		if ctxDeadline, ok := cmd.ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+			deadline = ctxDeadline
+		}
+		// Check for cancellation before setting deadline
+		select {
+		case <-cmd.ctx.Done():
+			cmd.closeErr = cmd.ctx.Err()
+			return nil, cmd.ctx.Err()
+		default:
+		}
+	}
+	cmd.client.conn.SetDeadline(deadline)
 	defer cmd.client.conn.SetDeadline(time.Time{})
 
 	_, msg, err := cmd.client.readResponse(250)
@@ -692,11 +809,23 @@ func (lmtpErr LMTPDataError) Unwrap() []error {
 // close the writer before calling any more methods on c. A call to
 // Data must be preceded by one or more calls to Rcpt.
 func (c *Client) Data() (*DataCommand, error) {
-	_, _, err := c.cmd(354, "DATA")
+	return c.DataContext(context.Background())
+}
+
+// DataContext issues a DATA command to the server and returns an object
+// to which the email contents can be written. The caller must call Close on
+// the returned object before calling any more methods on c.
+// The context can be used to cancel the operation or set a deadline.
+//
+// A call to DataContext must be preceded by one or more calls to Rcpt.
+//
+// If server returns an error, it will be of type *SMTPError.
+func (c *Client) DataContext(ctx context.Context) (*DataCommand, error) {
+	_, _, err := c.cmdContext(ctx, 354, "DATA")
 	if err != nil {
 		return nil, err
 	}
-	return &DataCommand{client: c, wc: c.text.DotWriter()}, nil
+	return &DataCommand{client: c, wc: c.text.DotWriter(), ctx: ctx}, nil
 }
 
 // SendMail will use an existing connection to send an email from
@@ -714,17 +843,42 @@ func (c *Client) Data() (*DataCommand, error) {
 // messages is accomplished by including an email address in the to
 // parameter but not including it in the r headers.
 func (c *Client) SendMail(from string, to []string, r io.Reader) error {
+	return c.SendMailContext(context.Background(), from, to, r)
+}
+
+// SendMailContext will use an existing connection to send an email from
+// address from, to addresses to, with message r.
+// The context can be used to cancel the operation or set a deadline.
+//
+// This function does not start TLS, nor does it perform authentication. Use
+// DialStartTLS and Auth before-hand if desirable.
+//
+// The addresses in the to parameter are the SMTP RCPT addresses.
+//
+// The r parameter should be an RFC 822-style email with headers
+// first, a blank line, and then the message body. The lines of r
+// should be CRLF terminated. The r headers should usually include
+// fields such as "From", "To", "Subject", and "Cc".  Sending "Bcc"
+// messages is accomplished by including an email address in the to
+// parameter but not including it in the r headers.
+func (c *Client) SendMailContext(ctx context.Context, from string, to []string, r io.Reader) error {
 	var err error
 
-	if err = c.Mail(from, nil); err != nil {
+	if err = c.MailContext(ctx, from, nil); err != nil {
 		return err
 	}
 	for _, addr := range to {
-		if err = c.Rcpt(addr, nil); err != nil {
+		// Check for cancellation in the loop
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err = c.RcptContext(ctx, addr, nil); err != nil {
 			return err
 		}
 	}
-	w, err := c.Data()
+	w, err := c.DataContext(ctx)
 	if err != nil {
 		return err
 	}

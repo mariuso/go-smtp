@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -34,6 +35,10 @@ type Conn struct {
 	session    Session
 	locker     sync.Mutex
 	binarymime bool
+	
+	// Session context for request cancellation and timeout management
+	sessionCtx    context.Context
+	sessionCancel context.CancelFunc
 
 	lineLimitReader *lineLimitReader
 	bdatPipe        *io.PipeWriter
@@ -60,8 +65,31 @@ func newConn(c net.Conn, s *Server) *Conn {
 		conn:   c,
 	}
 
+	// Initialize session context with timeout if configured
+	if s.SessionTimeout > 0 {
+		sc.sessionCtx, sc.sessionCancel = context.WithTimeout(context.Background(), s.SessionTimeout)
+	} else {
+		sc.sessionCtx, sc.sessionCancel = context.WithCancel(context.Background())
+	}
+
 	sc.init()
 	return sc
+}
+
+// createSession creates a new session, using context-aware backend if available
+func (c *Conn) createSession() (Session, error) {
+	// Try context-aware backend first
+	if backendCtx, ok := c.server.Backend.(BackendContext); ok {
+		sessionCtx, err := backendCtx.NewSessionContext(c.sessionCtx, c)
+		if err != nil {
+			return nil, err
+		}
+		// Return the SessionContext, which also implements Session
+		return sessionCtx, nil
+	}
+	
+	// Fallback to original backend interface
+	return c.server.Backend.NewSession(c)
 }
 
 func (c *Conn) init() {
@@ -96,6 +124,15 @@ func (c *Conn) init() {
 
 // Commands are dispatched to the appropriate handler functions.
 func (c *Conn) handle(cmd string, arg string) {
+	// Check session context for timeout/cancellation before processing any command
+	select {
+	case <-c.sessionCtx.Done():
+		c.writeResponse(421, EnhancedCode{4, 4, 5}, "Session timeout")
+		c.Close()
+		return
+	default:
+	}
+
 	// If panic happens during command handling - send 421 response
 	// and close connection.
 	defer func() {
@@ -190,6 +227,11 @@ func (c *Conn) Close() error {
 		c.session = nil
 	}
 
+	// Cancel session context to clean up any ongoing operations
+	if c.sessionCancel != nil {
+		c.sessionCancel()
+	}
+
 	return c.conn.Close()
 }
 
@@ -245,7 +287,7 @@ func (c *Conn) handleGreet(enhanced bool, arg string) {
 		// and reset the state exactly as if a RSET command has been issued."
 		c.reset()
 	} else {
-		sess, err := c.server.Backend.NewSession(c)
+		sess, err := c.createSession()
 		if err != nil {
 			c.helo = ""
 			c.writeError(451, EnhancedCode{4, 0, 0}, err)
@@ -319,6 +361,15 @@ func (c *Conn) handleGreet(enhanced bool, arg string) {
 
 // READY state -> waiting for MAIL
 func (c *Conn) handleMail(arg string) {
+	// Check session context for timeout/cancellation
+	select {
+	case <-c.sessionCtx.Done():
+		c.writeResponse(421, EnhancedCode{4, 4, 5}, "Session timeout")
+		c.Close()
+		return
+	default:
+	}
+
 	if c.helo == "" {
 		c.writeResponse(502, EnhancedCode{5, 5, 1}, "Please introduce yourself first.")
 		return
