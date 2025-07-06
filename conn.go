@@ -985,12 +985,24 @@ func (c *Conn) handleStartTLS() {
 	tlsConn := tls.Server(c.conn, c.server.TLSConfig)
 
 	if err := tlsConn.Handshake(); err != nil {
-		c.writeResponse(550, EnhancedCode{5, 0, 0}, "Handshake error")
+		// Log detailed TLS handshake error for debugging
+		if c.server.ErrorLog != nil {
+			c.server.ErrorLog.Printf("TLS handshake failed for %v: %v", c.conn.RemoteAddr(), err)
+		}
+		c.writeResponse(550, EnhancedCode{5, 0, 0}, "TLS handshake failed")
 		c.setState(StateError)
 		return
 	}
 
 	c.conn = tlsConn
+	
+	// Log successful TLS establishment
+	if c.server.ErrorLog != nil {
+		state := tlsConn.ConnectionState()
+		c.server.ErrorLog.Printf("TLS established for %v: version=%x, cipher=%s", 
+			c.conn.RemoteAddr(), state.Version, tls.CipherSuiteName(state.CipherSuite))
+	}
+	
 	c.setState(StateActive)
 	c.init()
 
