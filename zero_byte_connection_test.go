@@ -82,9 +82,11 @@ func TestNormalConnectionError(t *testing.T) {
 	buf := make([]byte, 1024)
 	conn.Read(buf)
 
-	// Send partial command and wait for timeout
-	conn.Write([]byte("HELO"))
-	time.Sleep(100 * time.Millisecond)
+	// Send command and then close connection to trigger error
+	conn.Write([]byte("HELO test.example.com\r\n"))
+	time.Sleep(10 * time.Millisecond) // Let server process
+	conn.Close() // Force connection error
+	time.Sleep(50 * time.Millisecond) // Let server handle error
 
 	// Check that timeout error was logged
 	logs := logBuf.String()
