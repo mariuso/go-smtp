@@ -990,6 +990,9 @@ func (c *Conn) handleStartTLS() {
 			c.server.ErrorLog.Printf("TLS handshake failed for %v: %v", c.conn.RemoteAddr(), err)
 		}
 		c.writeResponse(550, EnhancedCode{5, 0, 0}, "TLS handshake failed")
+		
+		// Set granular TLS failure state, then error state for backwards compatibility
+		c.setState(StateTLSFailed)
 		c.setState(StateError)
 		return
 	}
@@ -1003,6 +1006,8 @@ func (c *Conn) handleStartTLS() {
 			c.conn.RemoteAddr(), state.Version, tls.CipherSuiteName(state.CipherSuite))
 	}
 	
+	// Set granular TLS success state, then active state for backwards compatibility
+	c.setState(StateTLSSuccess)
 	c.setState(StateActive)
 	c.init()
 

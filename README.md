@@ -37,6 +37,8 @@ Available connection states:
 - `StateAuth` - During SASL authentication
 - `StateData` - Receiving message data
 - `StateStartTLS` - During TLS handshake
+- `StateTLSSuccess` - After successful TLS handshake
+- `StateTLSFailed` - After failed TLS handshake
 - `StateReset` - After RSET command
 - `StateIdle` - Between commands
 - `StateError` - Connection in error state

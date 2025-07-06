@@ -41,6 +41,12 @@ const (
 	// StateStartTLS represents a connection during TLS handshake.
 	StateStartTLS
 	
+	// StateTLSSuccess represents a connection after successful TLS handshake.
+	StateTLSSuccess
+	
+	// StateTLSFailed represents a connection after failed TLS handshake.
+	StateTLSFailed
+	
 	// StateReset represents a connection after RSET command, cleaning up session.
 	StateReset
 	
