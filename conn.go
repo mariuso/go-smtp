@@ -116,6 +116,15 @@ func (c *Conn) init() {
 
 // Commands are dispatched to the appropriate handler functions.
 func (c *Conn) handle(cmd string, arg string) {
+	// Check session context for timeout/cancellation before processing any command
+	select {
+	case <-c.sessionCtx.Done():
+		c.writeResponse(421, EnhancedCode{4, 4, 5}, "Session timeout")
+		c.Close()
+		return
+	default:
+	}
+
 	// If panic happens during command handling - send 421 response
 	// and close connection.
 	defer func() {
@@ -342,6 +351,15 @@ func (c *Conn) handleGreet(enhanced bool, arg string) {
 
 // READY state -> waiting for MAIL
 func (c *Conn) handleMail(arg string) {
+	// Check session context for timeout/cancellation
+	select {
+	case <-c.sessionCtx.Done():
+		c.writeResponse(421, EnhancedCode{4, 4, 5}, "Session timeout")
+		c.Close()
+		return
+	default:
+	}
+
 	if c.helo == "" {
 		c.writeResponse(502, EnhancedCode{5, 5, 1}, "Please introduce yourself first.")
 		return
