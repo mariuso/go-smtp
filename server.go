@@ -85,6 +85,15 @@ type Server struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	
+	// TLSTimeout is the maximum duration for TLS handshake.
+	// Zero means no TLS-specific timeout (uses ReadTimeout if set).
+	TLSTimeout        time.Duration
+	
+	// TLSDebug enables verbose TLS connection logging to ErrorLog.
+	// When enabled, logs detailed TLS connection information including
+	// protocol version, cipher suite, and certificate details.
+	TLSDebug          bool
+	
 	// ConnState specifies an optional callback function that is
 	// called when a client connection changes state.
 	ConnState ConnStateCallback

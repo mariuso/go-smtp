@@ -984,6 +984,13 @@ func (c *Conn) handleStartTLS() {
 	// Upgrade to TLS
 	tlsConn := tls.Server(c.conn, c.server.TLSConfig)
 
+	// Set TLS handshake timeout if configured
+	if c.server.TLSTimeout > 0 {
+		deadline := time.Now().Add(c.server.TLSTimeout)
+		tlsConn.SetDeadline(deadline)
+		defer tlsConn.SetDeadline(time.Time{}) // Clear deadline after handshake
+	}
+
 	if err := tlsConn.Handshake(); err != nil {
 		// Log detailed TLS handshake error for debugging
 		if c.server.ErrorLog != nil {
@@ -1002,8 +1009,26 @@ func (c *Conn) handleStartTLS() {
 	// Log successful TLS establishment
 	if c.server.ErrorLog != nil {
 		state := tlsConn.ConnectionState()
-		c.server.ErrorLog.Printf("TLS established for %v: version=%x, cipher=%s", 
-			c.conn.RemoteAddr(), state.Version, tls.CipherSuiteName(state.CipherSuite))
+		if c.server.TLSDebug {
+			// Detailed TLS debug logging
+			c.server.ErrorLog.Printf("TLS established for %v: version=%x, cipher=%s, server_name=%s, negotiated_protocol=%s", 
+				c.conn.RemoteAddr(), 
+				state.Version, 
+				tls.CipherSuiteName(state.CipherSuite),
+				state.ServerName,
+				state.NegotiatedProtocol)
+			
+			// Log certificate information
+			if len(state.PeerCertificates) > 0 {
+				cert := state.PeerCertificates[0]
+				c.server.ErrorLog.Printf("TLS client certificate for %v: subject=%v, issuer=%v, serial=%v", 
+					c.conn.RemoteAddr(), cert.Subject, cert.Issuer, cert.SerialNumber)
+			}
+		} else {
+			// Basic TLS success logging
+			c.server.ErrorLog.Printf("TLS established for %v: version=%x, cipher=%s", 
+				c.conn.RemoteAddr(), state.Version, tls.CipherSuiteName(state.CipherSuite))
+		}
 	}
 	
 	// Set granular TLS success state, then active state for backwards compatibility

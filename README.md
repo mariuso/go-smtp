@@ -59,11 +59,14 @@ server := smtp.NewServer(backend)
 server.SessionTimeout = 30 * time.Second  // Max 30 seconds per session
 server.ReadTimeout = 5 * time.Second      // Max 5 seconds per command
 server.WriteTimeout = 5 * time.Second     // Max 5 seconds for responses
+server.TLSTimeout = 10 * time.Second      // Max 10 seconds for TLS handshake
+server.TLSDebug = true                    // Enable detailed TLS logging
 ```
 
 - `SessionTimeout`: Maximum duration for the entire session (connection to completion)
-- Setting to `0` disables session-level timeout (only per-operation timeouts apply)
-- Session timeout is independent of `ReadTimeout` and `WriteTimeout`
+- `TLSTimeout`: Maximum duration for TLS handshake (uses ReadTimeout if not set)
+- `TLSDebug`: Enable verbose TLS connection logging with certificate details
+- Setting timeouts to `0` disables the respective timeout limits
 
 #### Context-Aware Backends
 
